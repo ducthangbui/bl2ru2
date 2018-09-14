@@ -30,10 +30,12 @@ import re
 IP_UDP_BASERULE = 'alert udp $HOME_NET any -> {} any (msg:"{} - {} - UDP traffic to {}"; classtype:trojan-activity; reference:url,{}; sid:{}; rev:1;)'
 IP_TCP_BASERULE = 'alert tcp $HOME_NET any -> {} any (msg:"{} - {} - TCP traffic to {}"; flow:to_server,established; classtype:trojan-activity; reference:url,{}; sid:{}; rev:1;)'
 IP_BASERULE = 'alert ip $HOME_NET any -> {} any (msg:"{} - {} - IP traffic to {}"; classtype:trojan-activity; reference:url,{}; sid:{}; rev:1;)'
+IP_BASERULE_PORT = 'alert ip $HOME_NET any -> {} {} (msg:"{} - {} - IP traffic to {}"; classtype:trojan-activity; reference:url,{}; sid:{}; rev:1;)'
 DNS_BASERULE = 'alert udp $HOME_NET any -> any 53 (msg:"{} - {} - DNS request for {}"; content:"|01 00 00 01 00 00 00 00 00 00|"; depth:20; offset: 2; content:"{}"; flow:to_server; fast_pattern:only; nocase; classtype:trojan-activity; reference:url,{}; sid:{}; rev:1;)'
 URL_BASERULE = 'alert http $HOME_NET any -> $EXTERNAL_NET $HTTP_PORTS (msg:"{} - {} - Related URL ({})"; content:"{}"; http_uri;{} flow:to_server,established; classtype:trojan-activity; reference:url,{}; sid:{}; rev:1;)'
 TLS_BASERULE = '#alert tls $HOME_NET any -> $EXTERNAL_NET $HTTP_PORTS (msg:"{} - {} - Related TLS SNI ({})"; tls_sni; content:"{}";flow:to_server,established; classtype:trojan-activity; reference:url,{}; sid:{}; rev:1;)'
 MD5_BASERULE = 'alert tcp any [$HTTP_PORTS, 25] -> $HOME_NET any (msg:"{} - {} - MD5 hash found in blacklist {}"; classtype:trojan-activity; filestore; filemd5:{}; reference:url,{}; sid:{}; rev:1;)'
+SHA_BASERULE = 'alert tcp any [$HTTP_PORTS, 25] -> $HOME_NET any (msg:"{} - {} - SHA hash found in blacklist {}"; classtype:trojan-activity; filestore; filesha:{}; reference:url,{}; sid:{}; rev:1;)'
 
 
 class Bl2ru2:
@@ -124,7 +126,15 @@ class Bl2ru2:
         '''
         Generate suricata rule for an IP
         '''
-        rule = (IP_BASERULE.format(ip_addr, self._org_, name, ip_addr, ref, self._sid_))
+        ip_addr_split_port = ip_addr.split(':')
+        #check ip is exist port
+        #if ip_addr is splited => is exited port
+        #ex: '1.2.3.4:80'.split(':') = [1.2.3.4, 80]
+        #ex: '1.2.3.4'/split(':') = [1.2.3.4]
+        if len(ip_addr_split_port) == 2:
+            rule = (IP_BASERULE_PORT.format(ip_addr_split_port[0], ip_addr_split_port[1], self._org_, name, ip_addr, ref, self._sid_))
+        else:    
+            rule = (IP_BASERULE.format(ip_addr, self._org_, name, ip_addr, ref, self._sid_))
         self._sid_ += 1
         return rule, self._sid_-1
 
@@ -149,6 +159,18 @@ class Bl2ru2:
         self._sid_ += 1
         return rule, self._sid_-1
 
+    def gen_sha_rule(self, name, filepath, ref):
+        '''
+        Check if filename is a path or a filename
+        :param name: Threat name
+        :param filepath: Can be a path or a filename. If your md5 file is in /etc/suricata/rules you can just pass a filename.
+                         Else, you need a full path.
+        :param ref: reference_url
+        :return: The generated rule and the new sid
+        '''
+        rule = (SHA_BASERULE.format(self._org_, name, os.path.basename(filepath), filepath, ref, self._sid_))
+        self._sid_ += 1
+        return rule, self._sid_-1
 
 def __split_line__(line):
     '''
@@ -160,6 +182,14 @@ def __split_line__(line):
     ioc = ioc.strip()
     return name, ioc, ref_url
 
+def __isSHA__(ioc):
+    isSHA128 = len(re.findall(r"([A-Fa-f0-9]{40})", ioc))
+    isSHA256 = len(re.findall(r"([A-Fa-f0-9]{64})", ioc))
+    isSHA512 = len(re.findall(r"([A-Fa-f0-9]{128})", ioc))
+
+    if isSHA128 == 1 or isSHA256 == 1 or isSHA512 == 1:
+        return 1
+    return 0
 
 def __generate_rules__(gen, csv_file):
     '''
@@ -184,8 +214,11 @@ def __generate_rules__(gen, csv_file):
                     # rules.append(rule)
                     (rule, sid) = gen.gen_ip_rule(name, ioc, ref_url)
                     rules.append(rule)
-                elif os.path.isfile(ioc):
+                elif len(re.findall(r"([a-fA-F\d]{32})", ioc)) == 1:
                     (rule, sid) = gen.gen_md5_rule(name, ioc, ref_url)
+                    rules.append(rule)
+                elif __isSHA__(ioc) == 1:
+                    (rule, sid) = gen.gen_sha_rule(name, ioc, ref_url)
                     rules.append(rule)
                 else:
                     # Well, by lack of other option, let's say it is a FQDN
